@@ -1,0 +1,57 @@
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+
+const { connectDB } = require('./config/db');
+const errorHandler = require('./middlewares/errorHandler');
+
+// Route imports
+const authRoutes = require('./routes/auth.routes');
+const userRoutes = require('./routes/user.routes');
+const departmentRoutes = require('./routes/department.routes');
+const teamRoutes = require('./routes/team.routes');
+const scheduleRoutes = require('./routes/schedule.routes');
+const reportRoutes = require('./routes/report.routes');
+const reviewRoutes = require('./routes/review.routes');
+const notificationRoutes = require('./routes/notification.routes');
+
+const app = express();
+
+// ─── Global Middleware ────────────────────────────────────────────────────────
+app.use(helmet());
+app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000' }));
+app.use(morgan('dev'));
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
+
+// ─── Routes ──────────────────────────────────────────────────────────────────
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/departments', departmentRoutes);
+app.use('/api/teams', teamRoutes);
+app.use('/api/schedules', scheduleRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/reviews', reviewRoutes);
+app.use('/api/notifications', notificationRoutes);
+
+// ─── Health check ─────────────────────────────────────────────────────────────
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ─── Global Error Handler (must be last) ─────────────────────────────────────
+app.use(errorHandler);
+
+// ─── Start Server ─────────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 5000;
+
+const start = async () => {
+    await connectDB();
+    app.listen(PORT, () => {
+        console.log(`🚀 Server running on port ${PORT}`);
+    });
+};
+
+start();
