@@ -1,21 +1,21 @@
 const express = require('express');
 const router = express.Router();
 const {
+    getPendingReviews,
     reviewReport,
-    approveReport,
     getReviewLogs,
 } = require('../controllers/review.controller');
 const { protect, authorize } = require('../middlewares/auth');
 
 router.use(protect);
 
-// POST /api/reviews/:reportId/review   ← stage 1: reviewer approves/rejects
-router.post('/:reportId/review', authorize('reviewer', 'admin'), reviewReport);
+// GET /api/reviews/pending             ← reviewer sees submitted, approver sees under_review
+router.get('/pending', authorize('reviewer', 'approver', 'admin'), getPendingReviews);
 
-// POST /api/reviews/:reportId/approve  ← stage 2: approver final decision
-router.post('/:reportId/approve', authorize('approver', 'admin'), approveReport);
+// POST /api/reviews/:reportId          ← unified action for both stage 1 and stage 2
+router.post('/:reportId', authorize('reviewer', 'approver', 'admin'), reviewReport);
 
-// GET /api/reviews/:reportId/logs      ← full audit trail for a report
+// GET /api/reviews/:reportId/logs      ← full audit trail
 router.get('/:reportId/logs', getReviewLogs);
 
 module.exports = router;

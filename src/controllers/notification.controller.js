@@ -50,4 +50,20 @@ const markAllAsRead = async (req, res, next) => {
     }
 };
 
-module.exports = { getMyNotifications, markAsRead, markAllAsRead };
+// ─── GET /api/notifications/unread-count ─────────────────────
+const getUnreadCount = async (req, res) => {
+    try {
+        const count = await Notification.count({
+            where: {
+                user_id: req.user.id,
+                is_read: false,
+            },
+        });
+        res.json({ count });
+    } catch (error) {
+        console.error('Unread count error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+};
+
+module.exports = { getMyNotifications, markAsRead, markAllAsRead, getUnreadCount };

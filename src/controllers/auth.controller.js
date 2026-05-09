@@ -13,9 +13,14 @@ const generateToken = (user) => {
 };
 
 // ─── POST /api/auth/register ──────────────────────────────────
+// Registers employee as inactive — admin must approve before they can log in
 const register = async (req, res, next) => {
     try {
-        const { full_name, email, password, role, dept_id, team_id } = req.body;
+        const { full_name, email, password, dept_id } = req.body;
+
+        if (!full_name || !email || !password) {
+            return res.status(400).json({ success: false, error: 'full_name, email, and password are required' });
+        }
 
         const existing = await User.scope('withPassword').findOne({ where: { email } });
         if (existing) {
@@ -24,27 +29,28 @@ const register = async (req, res, next) => {
 
         const password_hash = await bcrypt.hash(password, 12);
 
+        // Always register as employee, always inactive — admin activates + assigns team
         const user = await User.create({
             full_name,
             email,
             password_hash,
-            role,
+            role: 'employee',
             dept_id: dept_id || null,
-            team_id: team_id || null,
+            team_id: null,
+            is_active: false,
         });
 
-        const token = generateToken(user);
-
+        // No token — user cannot log in until admin approves
         res.status(201).json({
             success: true,
-            token,
+            message: 'Registration successful. Your account is pending admin approval.',
             user: {
                 user_id: user.user_id,
                 full_name: user.full_name,
                 email: user.email,
                 role: user.role,
                 dept_id: user.dept_id,
-                team_id: user.team_id,
+                is_active: false,
             },
         });
     } catch (err) {
@@ -62,8 +68,13 @@ const login = async (req, res, next) => {
             return res.status(401).json({ success: false, error: 'Invalid email or password' });
         }
 
+        // Clear message for pending accounts
         if (!user.is_active) {
-            return res.status(403).json({ success: false, error: 'Account is deactivated' });
+            return res.status(403).json({
+                success: false,
+                error: 'Your account is pending admin approval. You will be notified once activated.',
+                pending: true,
+            });
         }
 
         const isMatch = await bcrypt.compare(password, user.password_hash);

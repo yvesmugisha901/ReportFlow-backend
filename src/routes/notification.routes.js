@@ -4,18 +4,15 @@ const {
     getMyNotifications,
     markAsRead,
     markAllAsRead,
+    getUnreadCount,              // add this import
 } = require('../controllers/notification.controller');
 const { protect } = require('../middlewares/auth');
 
 router.use(protect);
 
-// GET /api/notifications          ← get all for logged-in user
 router.get('/', getMyNotifications);
-
-// PATCH /api/notifications/read-all  ← mark all as read
+router.get('/unread-count', getUnreadCount);     // ← ADD THIS (before /:id)
 router.patch('/read-all', markAllAsRead);
-
-// PATCH /api/notifications/:id/read  ← mark single as read
 router.patch('/:id/read', markAsRead);
 
 module.exports = router;
