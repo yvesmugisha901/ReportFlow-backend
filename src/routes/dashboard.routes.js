@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const {
     getAdminDashboard,
+    getApproverDashboard,
     getDepartmentDashboard,
     getReviewerDashboard,
     getEmployeeDashboard,
@@ -11,6 +12,7 @@ const { protect, authorize } = require('../middlewares/auth');
 router.use(protect);
 
 router.get('/admin', authorize('admin'), getAdminDashboard);
+router.get('/approver', authorize('admin', 'approver'), getApproverDashboard);
 router.get('/reviewer', authorize('admin', 'reviewer'), getReviewerDashboard);
 router.get('/employee', authorize('admin', 'employee'), getEmployeeDashboard);
 router.get('/department/:id', authorize('admin', 'reviewer'), getDepartmentDashboard);

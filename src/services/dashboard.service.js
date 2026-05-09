@@ -1,10 +1,8 @@
-const { Report, User, Department, Team, ReportSchedule } = require('../models');
+const { Report, User, Department, Team, ReportSchedule, ReviewLog } = require('../models');
 const { Op, fn, col } = require('sequelize');
 
 /**
  * Admin Dashboard — FR-12
- * Fixed: Report has no direct dept association — department is reached via employee.
- * Fixed: PK is report_id not id.
  */
 const getAdminDashboard = async () => {
     const [
@@ -35,14 +33,12 @@ const getAdminDashboard = async () => {
 
         Department.count(),
 
-        // Group by status — use report_id as the PK
         Report.findAll({
             attributes: ['status', [fn('COUNT', col('report_id')), 'count']],
             group: ['status'],
             raw: true,
         }),
 
-        // Recent 10 reports with employee + schedule info
         Report.findAll({
             include: [
                 {
@@ -67,7 +63,6 @@ const getAdminDashboard = async () => {
             limit: 10,
         }),
 
-        // Dept breakdown — count reports per department via employee's dept_id
         Department.findAll({
             attributes: ['dept_id', 'name'],
             include: [
@@ -93,7 +88,6 @@ const getAdminDashboard = async () => {
         ? Math.round((approved / totalReports) * 100)
         : 0;
 
-    // Flatten dept breakdown into counts
     const departmentBreakdown = deptBreakdown.map((dept) => {
         const allReports = (dept.members ?? []).flatMap(m => m.reports ?? []);
         const submitted = allReports.filter(r =>
@@ -102,12 +96,11 @@ const getAdminDashboard = async () => {
         return {
             name: dept.name,
             submitted,
-            total: allReports.length || submitted, // total = all ever created
+            total: allReports.length || submitted,
         };
     });
 
     return {
-        // Summary counts — frontend reads these keys
         totalReports,
         pendingReports: pendingReview,
         approvedReports: approved,
@@ -116,16 +109,184 @@ const getAdminDashboard = async () => {
         totalEmployees,
         totalDepartments,
         complianceRate,
-
-        // Extras
-        reportsThisMonth: 0,      // extend later with createdAt filter if needed
+        reportsThisMonth: 0,
         approvedThisWeek: 0,
         newEmployeesThisMonth: 0,
         complianceRateDelta: 0,
-
         reports_by_status: reportsByStatus,
         recentReports,
         departmentBreakdown,
+    };
+};
+
+/**
+ * Approver Dashboard (COO) — FR-15
+ *
+ * The approver sees company-wide stats + only reports that
+ * passed Stage 1 (status = 'under_review') in their queue.
+ * They also see the full history of what they have approved/rejected.
+ */
+const getApproverDashboard = async () => {
+    const [
+        totalReports,
+        pendingStage2,
+        approved,
+        rejected,
+        changesRequested,
+        lateReports,
+        deptBreakdown,
+        stage2Queue,
+        recentlyActioned,
+    ] = await Promise.all([
+
+        // Total reports ever
+        Report.count(),
+
+        // Waiting for COO — passed stage 1, not yet final
+        Report.count({ where: { status: 'under_review' } }),
+
+        // Final approved
+        Report.count({ where: { status: 'approved' } }),
+
+        // Rejected at any stage
+        Report.count({ where: { status: 'rejected' } }),
+
+        // Changes requested
+        Report.count({ where: { status: 'changes_requested' } }),
+
+        // Late submissions
+        Report.count({ where: { is_late: true } }),
+
+        // Dept compliance breakdown (same as admin)
+        Department.findAll({
+            attributes: ['dept_id', 'name'],
+            include: [
+                {
+                    model: User,
+                    as: 'members',
+                    attributes: ['user_id'],
+                    required: false,
+                    include: [
+                        {
+                            model: Report,
+                            as: 'reports',
+                            attributes: ['report_id', 'status'],
+                            required: false,
+                        },
+                    ],
+                },
+            ],
+        }),
+
+        // Stage 2 queue — under_review reports with full detail + review logs
+        Report.findAll({
+            where: { status: 'under_review' },
+            include: [
+                {
+                    model: User,
+                    as: 'employee',
+                    attributes: ['user_id', 'full_name', 'email'],
+                    include: [
+                        {
+                            model: Department,
+                            as: 'department',
+                            attributes: ['dept_id', 'name'],
+                        },
+                        {
+                            model: Team,
+                            as: 'team',
+                            attributes: ['team_id', 'name'],
+                        },
+                    ],
+                },
+                {
+                    model: ReportSchedule,
+                    as: 'schedule',
+                    attributes: ['schedule_id', 'title', 'deadline', 'frequency'],
+                },
+                {
+                    model: ReviewLog,
+                    as: 'reviewLogs',
+                    include: [
+                        {
+                            model: User,
+                            as: 'reviewer',
+                            attributes: ['user_id', 'full_name', 'role'],
+                        },
+                    ],
+                    order: [['created_at', 'ASC']],
+                },
+            ],
+            order: [['submitted_at', 'ASC']], // oldest first — FIFO queue
+        }),
+
+        // Recently actioned by COO (stage_2 review logs)
+        ReviewLog.findAll({
+            where: { stage: 'stage_2' },
+            include: [
+                {
+                    model: Report,
+                    as: 'report',
+                    attributes: ['report_id', 'title', 'status'],
+                    include: [
+                        {
+                            model: User,
+                            as: 'employee',
+                            attributes: ['full_name'],
+                            include: [
+                                {
+                                    model: Department,
+                                    as: 'department',
+                                    attributes: ['name'],
+                                },
+                            ],
+                        },
+                    ],
+                },
+                {
+                    model: User,
+                    as: 'reviewer',
+                    attributes: ['full_name'],
+                },
+            ],
+            order: [['created_at', 'DESC']],
+            limit: 10,
+        }),
+    ]);
+
+    const complianceRate = totalReports > 0
+        ? Math.round((approved / totalReports) * 100)
+        : 0;
+
+    const departmentBreakdownMapped = deptBreakdown.map((dept) => {
+        const allReports = (dept.members ?? []).flatMap(m => m.reports ?? []);
+        const submitted = allReports.filter(r =>
+            ['submitted', 'under_review', 'approved', 'changes_requested', 'rejected'].includes(r.status)
+        ).length;
+        return {
+            name: dept.name,
+            submitted,
+            total: allReports.length || submitted,
+        };
+    });
+
+    return {
+        // Summary counts — same keys the frontend reads
+        totalReports,
+        pendingReports: pendingStage2,   // awaiting COO sign-off
+        approvedReports: approved,
+        rejectedReports: rejected,
+        changesRequested,
+        overdueReports: lateReports,
+        complianceRate,
+        complianceRateDelta: 0,          // extend with historical comparison later
+        reportsThisMonth: 0,
+        approvedThisWeek: 0,
+
+        // Queue + history
+        stage2Queue,        // full report objects for the ReviewQueue component
+        recentlyActioned,   // COO's own recent actions
+        departmentBreakdown: departmentBreakdownMapped,
     };
 };
 
@@ -141,7 +302,7 @@ const getDepartmentDashboard = async (departmentId) => {
 
     const whereClause = employeeIds.length > 0
         ? { employee_id: { [Op.in]: employeeIds } }
-        : { employee_id: -1 }; // no members → no reports
+        : { employee_id: -1 };
 
     const [pending, submitted, approved, changesRequested, total, recentReports] = await Promise.all([
         Report.count({ where: { ...whereClause, status: 'pending' } }),
@@ -240,6 +401,7 @@ const getEmployeeDashboard = async (employee) => {
 
 module.exports = {
     getAdminDashboard,
+    getApproverDashboard,
     getDepartmentDashboard,
     getReviewerDashboard,
     getEmployeeDashboard,

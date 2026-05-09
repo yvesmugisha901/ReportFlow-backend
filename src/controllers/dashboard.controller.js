@@ -9,6 +9,15 @@ const getAdminDashboard = async (req, res, next) => {
     }
 };
 
+const getApproverDashboard = async (req, res, next) => {
+    try {
+        const data = await dashboardService.getApproverDashboard();
+        res.json({ success: true, ...data });
+    } catch (err) {
+        next(err);
+    }
+};
+
 const getDepartmentDashboard = async (req, res, next) => {
     try {
         const deptId = req.params.id ?? req.user.department_id;
@@ -39,6 +48,7 @@ const getEmployeeDashboard = async (req, res, next) => {
 
 module.exports = {
     getAdminDashboard,
+    getApproverDashboard,
     getDepartmentDashboard,
     getReviewerDashboard,
     getEmployeeDashboard,
