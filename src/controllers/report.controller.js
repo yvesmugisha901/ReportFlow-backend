@@ -5,7 +5,7 @@ const { Op } = require('sequelize');
 const getAllReports = async (req, res, next) => {
     try {
         const where = {};
-        const userId = req.user.id; // ← fixed: PK is user_id not id
+        const userId = req.user.id;
 
         if (req.user.role === 'employee') {
             where.employee_id = userId;
@@ -16,12 +16,10 @@ const getAllReports = async (req, res, next) => {
             where.employee_id = req.query.employee_id;
         }
 
-        // Search by title
         if (req.query.search) {
             where.title = { [Op.iLike]: `%${req.query.search}%` };
         }
 
-        // Pagination
         const page = Math.max(parseInt(req.query.page) || 1, 1);
         const limit = Math.min(parseInt(req.query.limit) || 50, 100);
         const offset = (page - 1) * limit;
@@ -97,7 +95,7 @@ const getReportById = async (req, res, next) => {
 };
 
 // ─── POST /api/reports ────────────────────────────────────────
-// schedule_id is now optional — employee can submit without a schedule
+// Creates AND immediately submits the report in one step.
 const createReport = async (req, res, next) => {
     try {
         const userId = req.user.id;
@@ -115,21 +113,41 @@ const createReport = async (req, res, next) => {
             }
         }
 
+        // req.file.path is already normalized to "/uploads/reports/filename.ext"
+        // by the normalizeFilePath middleware in report.routes.js
         const file_path = req.file ? req.file.path : null;
         const file_name = req.file ? req.file.originalname : null;
 
-        if (!content && !summary && !file_path) {
-            return res.status(400).json({ success: false, error: 'Report must have content or an uploaded file' });
+        // Require at least content/summary OR a file
+        const resolvedContent = content?.trim() || summary?.trim() || null;
+        if (!resolvedContent && !file_path) {
+            return res.status(400).json({
+                success: false,
+                error: 'Report must have content or an uploaded file',
+            });
         }
 
+        // Determine if late
+        let is_late = false;
+        const now = new Date();
+        if (schedule_id) {
+            const schedule = await ReportSchedule.findByPk(schedule_id);
+            if (schedule?.deadline) {
+                is_late = now > new Date(schedule.deadline);
+            }
+        }
+
+        // Create and immediately mark as submitted in one step
         const report = await Report.create({
             schedule_id: schedule_id || null,
             employee_id: userId,
             title: title.trim(),
-            content: content || summary || null,  // summary falls back to content field
-            file_path: file_path || null,
-            file_name: file_name || null,
-            status: 'pending',
+            content: resolvedContent,
+            file_path,
+            file_name,
+            status: 'submitted',       // ← submit immediately on create
+            submitted_at: now,         // ← stamp submission time
+            is_late,
         });
 
         res.status(201).json({ success: true, report });
@@ -139,6 +157,7 @@ const createReport = async (req, res, next) => {
 };
 
 // ─── PATCH /api/reports/:id/submit ───────────────────────────
+// Kept for resubmission after changes_requested
 const submitReport = async (req, res, next) => {
     try {
         const userId = req.user.id;
@@ -204,7 +223,7 @@ const updateReport = async (req, res, next) => {
 
         await report.update({
             title: title ?? report.title,
-            content: content ?? summary ?? report.content,
+            content: content?.trim() ?? summary?.trim() ?? report.content,
             file_path,
             file_name,
         });
