@@ -45,12 +45,15 @@ const upload = multer({
 });
 
 // ── Rewrite disk path → public URL path ──────────────────────
-// Saves "/uploads/reports/filename.pdf" to DB instead of the
-// full absolute disk path, so the frontend can use it directly.
+// Handles req.files (array) and normalizes first file into req.file
+// so the controller stays simple.
 function normalizeFilePath(req, _res, next) {
-    if (req.file) {
-        const filename = path.basename(req.file.path);
-        req.file.path = `/uploads/reports/${filename}`;
+    if (req.files && req.files.length > 0) {
+        const first = req.files[0];
+        first.path = `/uploads/reports/${path.basename(first.path)}`;
+        req.file = first;
+    } else if (req.file) {
+        req.file.path = `/uploads/reports/${path.basename(req.file.path)}`;
     }
     next();
 }
@@ -59,11 +62,11 @@ router.use(protect);
 
 router.route('/')
     .get(getAllReports)
-    .post(authorize('employee', 'admin'), upload.single('file'), normalizeFilePath, createReport);
+    .post(authorize('employee', 'admin'), upload.array('files[]', 10), normalizeFilePath, createReport);
 
 router.route('/:id')
     .get(getReportById)
-    .put(authorize('employee', 'admin'), upload.single('file'), normalizeFilePath, updateReport)
+    .put(authorize('employee', 'admin'), upload.array('files[]', 10), normalizeFilePath, updateReport)
     .delete(authorize('employee', 'admin'), deleteReport);
 
 router.patch('/:id/submit', authorize('employee', 'admin'), submitReport);
