@@ -3,7 +3,12 @@ const { Team, Department, User } = require('../models');
 // ─── GET /api/teams ───────────────────────────────────────────
 const getAllTeams = async (req, res, next) => {
     try {
+        // FIX: read optional dept_id filter from query string
+        const { dept_id } = req.query;
+        const where = dept_id ? { dept_id } : {};
+
         const teams = await Team.findAll({
+            where,
             include: [{ association: 'department', attributes: ['dept_id', 'name'] }],
             order: [['name', 'ASC']],
         });
