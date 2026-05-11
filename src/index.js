@@ -21,14 +21,30 @@ const notificationRoutes = require('./routes/notification.routes');
 const app = express();
 
 // ─── Global Middleware ────────────────────────────────────────────────────────
-app.use(helmet());
-app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000' }));
+const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
+
+app.use(
+    helmet({
+        contentSecurityPolicy: {
+            directives: {
+                ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+                "frame-ancestors": ["'self'", CLIENT_URL],
+            },
+        },
+        crossOriginResourcePolicy: false, // allow /uploads to be fetched cross-origin
+    })
+);
+app.use(cors({ origin: CLIENT_URL }));
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
 // ─── Static file serving (uploaded reports) ───────────────────────────────────
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', (req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Content-Security-Policy', `frame-ancestors 'self' ${CLIENT_URL}`);
+    next();
+}, express.static(path.join(__dirname, 'uploads')));
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
