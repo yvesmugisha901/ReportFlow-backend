@@ -9,18 +9,20 @@ const {
 } = require('../controllers/department.controller');
 const { protect, authorize } = require('../middlewares/auth');
 
-router.use(protect);
+// ─── PUBLIC (no token required) ───────────────────────────────
+// Used on the register page before the user has a token
+router.get('/', getAllDepartments);
 
-// GET /api/departments       ← all authenticated users can view
-// POST /api/departments      ← admin only
-router.route('/')
-    .get(getAllDepartments)
-    .post(authorize('admin'), createDepartment);
+// ─── PROTECTED (token required from here down) ────────────────
+router.use(protect);
 
 // GET/PUT/DELETE /api/departments/:id
 router.route('/:id')
     .get(getDepartmentById)
     .put(authorize('admin'), updateDepartment)
     .delete(authorize('admin'), deleteDepartment);
+
+// POST /api/departments      ← admin only
+router.post('/', authorize('admin'), createDepartment);
 
 module.exports = router;
