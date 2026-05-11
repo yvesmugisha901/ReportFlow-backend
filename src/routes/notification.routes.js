@@ -4,15 +4,21 @@ const {
     getMyNotifications,
     markAsRead,
     markAllAsRead,
-    getUnreadCount,              // add this import
+    getUnreadCount,
+    deleteNotification,
+    deleteAllRead,
 } = require('../controllers/notification.controller');
 const { protect } = require('../middlewares/auth');
 
 router.use(protect);
 
+// ⚠️ Static routes before /:id param routes
 router.get('/', getMyNotifications);
-router.get('/unread-count', getUnreadCount);     // ← ADD THIS (before /:id)
-router.patch('/read-all', markAllAsRead);
+router.get('/unread-count', getUnreadCount);
+router.patch('/mark-all-read', markAllAsRead);   // matches frontend
+router.patch('/read-all', markAllAsRead);        // keep old one too for safety
+router.delete('/read', deleteAllRead);           // delete all read notifications
 router.patch('/:id/read', markAsRead);
+router.delete('/:id', deleteNotification);       // delete single notification
 
 module.exports = router;

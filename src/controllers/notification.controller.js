@@ -1,7 +1,6 @@
 const { Notification } = require('../models');
 
 // ─── GET /api/notifications ───────────────────────────────────
-// Returns all notifications for the logged-in user
 const getMyNotifications = async (req, res, next) => {
     try {
         const notifications = await Notification.findAll({
@@ -9,9 +8,24 @@ const getMyNotifications = async (req, res, next) => {
             order: [['created_at', 'DESC']],
         });
 
-        const unreadCount = notifications.filter((n) => !n.is_read).length;
+        const unreadCount = notifications.filter(n => !n.is_read).length;
 
+        res.set('Cache-Control', 'no-store');
         res.json({ success: true, unreadCount, notifications });
+    } catch (err) {
+        next(err);
+    }
+};
+
+// ─── GET /api/notifications/unread-count ─────────────────────
+const getUnreadCount = async (req, res, next) => {
+    try {
+        const count = await Notification.count({
+            where: { user_id: req.user.id, is_read: false },
+        });
+
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, count });
     } catch (err) {
         next(err);
     }
@@ -30,13 +44,14 @@ const markAsRead = async (req, res, next) => {
 
         await notif.update({ is_read: true });
 
+        res.set('Cache-Control', 'no-store');
         res.json({ success: true, message: 'Marked as read' });
     } catch (err) {
         next(err);
     }
 };
 
-// ─── PATCH /api/notifications/read-all ───────────────────────
+// ─── PATCH /api/notifications/mark-all-read ──────────────────
 const markAllAsRead = async (req, res, next) => {
     try {
         await Notification.update(
@@ -44,26 +59,52 @@ const markAllAsRead = async (req, res, next) => {
             { where: { user_id: req.user.id, is_read: false } }
         );
 
+        res.set('Cache-Control', 'no-store');
         res.json({ success: true, message: 'All notifications marked as read' });
     } catch (err) {
         next(err);
     }
 };
 
-// ─── GET /api/notifications/unread-count ─────────────────────
-const getUnreadCount = async (req, res) => {
+// ─── DELETE /api/notifications/:id ───────────────────────────
+const deleteNotification = async (req, res, next) => {
     try {
-        const count = await Notification.count({
-            where: {
-                user_id: req.user.id,
-                is_read: false,
-            },
+        const notif = await Notification.findOne({
+            where: { notif_id: req.params.id, user_id: req.user.id },
         });
-        res.json({ count });
-    } catch (error) {
-        console.error('Unread count error:', error);
-        res.status(500).json({ message: 'Server error' });
+
+        if (!notif) {
+            return res.status(404).json({ success: false, error: 'Notification not found' });
+        }
+
+        await notif.destroy();
+
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, message: 'Notification deleted' });
+    } catch (err) {
+        next(err);
     }
 };
 
-module.exports = { getMyNotifications, markAsRead, markAllAsRead, getUnreadCount };
+// ─── DELETE /api/notifications/read ──────────────────────────
+const deleteAllRead = async (req, res, next) => {
+    try {
+        await Notification.destroy({
+            where: { user_id: req.user.id, is_read: true },
+        });
+
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, message: 'All read notifications deleted' });
+    } catch (err) {
+        next(err);
+    }
+};
+
+module.exports = {
+    getMyNotifications,
+    getUnreadCount,
+    markAsRead,
+    markAllAsRead,
+    deleteNotification,
+    deleteAllRead,
+};
