@@ -16,13 +16,11 @@ const getPendingReviews = async (req, res, next) => {
         let where = {};
 
         if (role === 'reviewer') {
-            // Reviewer only sees reports from their own department (submitted status)
             const reviewer = await User.findByPk(userId);
             if (!reviewer?.dept_id) {
                 return res.json({ success: true, count: 0, reports: [] });
             }
 
-            // Get all employee IDs in this department
             const members = await User.findAll({
                 where: { dept_id: reviewer.dept_id },
                 attributes: ['user_id'],
@@ -35,10 +33,13 @@ const getPendingReviews = async (req, res, next) => {
             };
 
         } else if (role === 'approver') {
-            // Approver sees all reports that passed stage 1
             where = { status: 'under_review' };
+
+        } else if (role === 'admin') {
+            where = { status: ['submitted', 'under_review'] };
+
         } else {
-            return res.status(403).json({ success: false, error: 'Not a reviewer or approver' });
+            return res.status(403).json({ success: false, error: 'Not authorized to view pending reviews' });
         }
 
         const reports = await Report.findAll({
@@ -49,7 +50,10 @@ const getPendingReviews = async (req, res, next) => {
                     attributes: ['user_id', 'full_name', 'email'],
                     include: [{ association: 'department', attributes: ['dept_id', 'name'] }],
                 },
-                { association: 'schedule', attributes: ['schedule_id', 'title', 'deadline', 'frequency'] },
+                {
+                    association: 'schedule',
+                    attributes: ['schedule_id', 'title', 'deadline', 'frequency'],
+                },
                 {
                     association: 'reviewLogs',
                     include: [{ association: 'reviewer', attributes: ['user_id', 'full_name', 'role'] }],
@@ -66,7 +70,7 @@ const getPendingReviews = async (req, res, next) => {
     }
 };
 
-// ─── POST /api/reviews/:reportId ─────────────────────────────
+// ─── POST /api/reviews/:reportId ──────────────────────────────
 const reviewReport = async (req, res, next) => {
     try {
         const { action, comment } = req.body;
@@ -80,7 +84,6 @@ const reviewReport = async (req, res, next) => {
             return res.status(404).json({ success: false, error: 'Report not found' });
         }
 
-        // Role rules
         const rules = {
             reviewer: { allowedStatus: 'submitted', stage: 'stage_1' },
             approver: { allowedStatus: 'under_review', stage: 'stage_2' },
@@ -98,14 +101,10 @@ const reviewReport = async (req, res, next) => {
             });
         }
 
-        // Validate action
-        // Frontend sends: "approve" | "changes" | "reject"
-        // Map to backend values
         const actionMap = {
             approve: 'approved',
             changes: 'changes_requested',
             reject: 'rejected',
-            // also accept direct backend values
             approved: 'approved',
             changes_requested: 'changes_requested',
             rejected: 'rejected',
@@ -120,33 +119,29 @@ const reviewReport = async (req, res, next) => {
             return res.status(400).json({ success: false, error: 'Comment is required when rejecting' });
         }
 
-        // Next report status
         const nextStatus = {
             stage_1: {
-                approved: 'under_review',      // passes to stage 2
+                approved: 'under_review',
                 rejected: 'rejected',
                 changes_requested: 'changes_requested',
             },
             stage_2: {
-                approved: 'approved',          // final approval
+                approved: 'approved',
                 rejected: 'rejected',
                 changes_requested: 'changes_requested',
             },
         }[rule.stage][normalizedAction];
 
-        // Save review log — stage as string consistently
         await ReviewLog.create({
             report_id: report.report_id,
             reviewer_id: reviewerId,
-            stage: rule.stage,         // 'stage_1' or 'stage_2'
+            stage: rule.stage,
             action: normalizedAction,
             comment: comment?.trim() || null,
         });
 
-        // Update report status
         await report.update({ status: nextStatus });
 
-        // Notify employee
         const msgMap = {
             approved: rule.stage === 'stage_1'
                 ? `Your report "${report.title}" passed Stage 1 review and is now with the final approver.`
@@ -163,18 +158,71 @@ const reviewReport = async (req, res, next) => {
     }
 };
 
-// ─── GET /api/reviews/:reportId/logs ─────────────────────────
+// ─── GET /api/reviews/logs (all logs, admin) ──────────────────
+// ─── GET /api/reviews/:reportId/logs (single report) ─────────
 const getReviewLogs = async (req, res, next) => {
     try {
+        const { reportId } = req.params;
+
+        const whereClause = reportId ? { report_id: reportId } : {};
+
         const logs = await ReviewLog.findAll({
-            where: { report_id: req.params.reportId },
-            include: [{ association: 'reviewer', attributes: ['user_id', 'full_name', 'role'] }],
-            order: [['created_at', 'ASC']],
+            where: whereClause,
+            include: [
+                {
+                    association: 'reviewer',
+                    attributes: ['user_id', 'full_name', 'role'],
+                },
+                ...(!reportId ? [{
+                    association: 'report',
+                    attributes: ['report_id', 'title', 'status'],
+                    include: [{
+                        association: 'employee',
+                        attributes: ['user_id', 'full_name'],
+                    }],
+                }] : []),
+            ],
+            order: [['created_at', reportId ? 'ASC' : 'DESC']],
         });
-        res.json({ success: true, logs });
+
+        res.json({ success: true, count: logs.length, logs });
     } catch (err) {
         next(err);
     }
 };
 
-module.exports = { getPendingReviews, reviewReport, getReviewLogs };
+// ─── GET /api/reviews/my-history ──────────────────────────────
+// Returns all reports the logged-in reviewer/approver has acted on
+const getMyReviewHistory = async (req, res, next) => {
+    try {
+        const { id: reviewerId } = req.user;
+
+        const logs = await ReviewLog.findAll({
+            where: { reviewer_id: reviewerId },
+            include: [
+                {
+                    association: 'report',
+                    attributes: ['report_id', 'title', 'status', 'submitted_at'],
+                    include: [
+                        {
+                            association: 'employee',
+                            attributes: ['user_id', 'full_name', 'email'],
+                            include: [{ association: 'department', attributes: ['dept_id', 'name'] }],
+                        },
+                        {
+                            association: 'schedule',
+                            attributes: ['schedule_id', 'title', 'deadline', 'frequency'],
+                        },
+                    ],
+                },
+            ],
+            order: [['created_at', 'DESC']],
+        });
+
+        res.json({ success: true, count: logs.length, logs });
+    } catch (err) {
+        next(err);
+    }
+};
+
+module.exports = { getPendingReviews, reviewReport, getReviewLogs, getMyReviewHistory };
