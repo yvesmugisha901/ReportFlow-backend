@@ -6,6 +6,7 @@ const ReportSchedule = require('./ReportSchedule');
 const Report = require('./Report');
 const ReviewLog = require('./ReviewLog');
 const Notification = require('./Notification');
+const PasswordResetToken = require('./PasswordResetToken'); // ← ADD THIS
 
 // ─────────────────────────────────────────────────────────────
 // ASSOCIATIONS
@@ -48,6 +49,9 @@ Notification.belongsTo(Report, { foreignKey: 'report_id', as: 'report' });
 User.hasMany(Notification, { foreignKey: 'user_id', as: 'notifications' });
 Report.hasMany(Notification, { foreignKey: 'report_id', as: 'notifications' });
 
+// PasswordResetToken                                           // ← ADD THIS
+PasswordResetToken.belongsTo(User, { foreignKey: 'user_id', as: 'user' }); // ← ADD THIS
+
 // ─────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -58,4 +62,5 @@ module.exports = {
     Report,
     ReviewLog,
     Notification,
+    PasswordResetToken, // ← ADD THIS
 };

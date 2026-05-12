@@ -1,6 +1,9 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { User } = require('../models');
+const crypto = require('crypto');
+const { Op } = require('sequelize');
+const { User, PasswordResetToken } = require('../models');
+const { sendMail } = require('../utils/mailer');
 require('dotenv').config();
 
 // ─── Generate JWT ─────────────────────────────────────────────
@@ -13,7 +16,6 @@ const generateToken = (user) => {
 };
 
 // ─── POST /api/auth/register ──────────────────────────────────
-// Registers employee as inactive — admin must approve before they can log in
 const register = async (req, res, next) => {
     try {
         const { full_name, email, password, dept_id } = req.body;
@@ -29,7 +31,6 @@ const register = async (req, res, next) => {
 
         const password_hash = await bcrypt.hash(password, 12);
 
-        // Always register as employee, always inactive — admin activates + assigns team
         const user = await User.create({
             full_name,
             email,
@@ -40,7 +41,6 @@ const register = async (req, res, next) => {
             is_active: false,
         });
 
-        // No token — user cannot log in until admin approves
         res.status(201).json({
             success: true,
             message: 'Registration successful. Your account is pending admin approval.',
@@ -68,7 +68,6 @@ const login = async (req, res, next) => {
             return res.status(401).json({ success: false, error: 'Invalid email or password' });
         }
 
-        // Clear message for pending accounts
         if (!user.is_active) {
             return res.status(403).json({
                 success: false,
@@ -121,4 +120,120 @@ const getMe = async (req, res, next) => {
     }
 };
 
-module.exports = { register, login, getMe };
+// ─── POST /api/auth/forgot-password ──────────────────────────
+const forgotPassword = async (req, res, next) => {
+    try {
+        const { email } = req.body;
+
+        if (!email || !email.trim()) {
+            return res.status(400).json({ success: false, error: 'Email is required.' });
+        }
+
+        const user = await User.findOne({ where: { email: email.trim().toLowerCase() } });
+
+        // Always return 200 — never reveal whether the email exists
+        if (!user) {
+            return res.status(200).json({
+                success: true,
+                message: 'If that email is registered, a reset link has been sent.',
+            });
+        }
+
+        // Invalidate any previous unused tokens for this user
+        await PasswordResetToken.destroy({
+            where: { user_id: user.user_id, used: false },
+        });
+
+        // Generate a secure random token (32 bytes → 64 hex chars)
+        const rawToken = crypto.randomBytes(32).toString('hex');
+
+        // Expires in 1 hour
+        const expires_at = new Date(Date.now() + 60 * 60 * 1000);
+
+        await PasswordResetToken.create({
+            user_id: user.user_id,
+            token: rawToken,
+            expires_at,
+        });
+
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const resetUrl = `${frontendUrl}/auth/reset-password?token=${rawToken}`;
+
+        // Send via Ethereal (fake SMTP) — check terminal for the preview URL
+        await sendMail({
+            to: user.email,
+            subject: 'Reset your ReportFlow password',
+            html: `
+                <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#f8f9fc;border-radius:12px;">
+                    <h2 style="color:#4f46e5;margin-bottom:8px;">Reset your password</h2>
+                    <p style="color:#374151;font-size:14px;">
+                        Hi ${user.full_name || user.email},<br/><br/>
+                        We received a request to reset your ReportFlow password.
+                        Click the button below — this link expires in <strong>1 hour</strong>.
+                    </p>
+                    <a href="${resetUrl}"
+                       style="display:inline-block;margin:24px 0;padding:12px 24px;background:#4f46e5;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">
+                        Reset Password →
+                    </a>
+                    <p style="color:#6b7280;font-size:12px;">
+                        If you didn't request this, you can safely ignore this email.
+                    </p>
+                    <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0"/>
+                    <p style="color:#9ca3af;font-size:11px;">ReportFlow · This is an automated message.</p>
+                </div>
+            `,
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: 'If that email is registered, a reset link has been sent.',
+        });
+    } catch (err) {
+        next(err);
+    }
+};
+
+// ─── POST /api/auth/reset-password ───────────────────────────
+const resetPassword = async (req, res, next) => {
+    try {
+        const { token, password } = req.body;
+
+        if (!token || !password) {
+            return res.status(400).json({ success: false, error: 'Token and new password are required.' });
+        }
+        if (password.length < 8) {
+            return res.status(400).json({ success: false, error: 'Password must be at least 8 characters.' });
+        }
+
+        const record = await PasswordResetToken.findOne({
+            where: {
+                token,
+                used: false,
+                expires_at: { [Op.gt]: new Date() }, // not expired
+            },
+        });
+
+        if (!record) {
+            return res.status(400).json({
+                success: false,
+                error: 'This reset link is invalid or has expired. Please request a new one.',
+            });
+        }
+
+        // Hash and save the new password
+        const password_hash = await bcrypt.hash(password, 12);
+        await User.update({ password_hash }, { where: { user_id: record.user_id } });
+
+        // Burn the token — one-time use only
+        await record.update({ used: true });
+
+        return res.status(200).json({
+            success: true,
+            message: 'Password updated successfully. You can now log in.',
+        });
+    } catch (err) {
+        next(err);
+    }
+};
+
+module.exports = { register, login, getMe, forgotPassword, resetPassword };
