@@ -7,7 +7,6 @@ const path = require('path');
 
 const { connectDB } = require('./config/db');
 const errorHandler = require('./middlewares/errorHandler');
-const { PasswordResetToken } = require('./models'); // ← ADDED
 
 // Route imports
 const authRoutes = require('./routes/auth.routes');
@@ -32,7 +31,7 @@ app.use(
                 "frame-ancestors": ["'self'", CLIENT_URL],
             },
         },
-        crossOriginResourcePolicy: false,
+        crossOriginResourcePolicy: false, // allow /uploads to be fetched cross-origin
     })
 );
 app.use(cors({ origin: CLIENT_URL }));
@@ -71,11 +70,6 @@ const PORT = process.env.PORT || 5000;
 
 const start = async () => {
     await connectDB();
-
-    // Creates password_reset_tokens table if it doesn't exist yet.
-    // Safe to remove after first successful run.
-    await PasswordResetToken.sync({ alter: true }); // ← ADDED
-
     app.listen(PORT, () => {
         console.log(`🚀 Server running on port ${PORT}`);
     });
