@@ -131,7 +131,6 @@ const forgotPassword = async (req, res, next) => {
 
         const user = await User.findOne({ where: { email: email.trim().toLowerCase() } });
 
-        // Always return 200 — never reveal whether the email exists
         if (!user) {
             return res.status(200).json({
                 success: true,
@@ -139,15 +138,11 @@ const forgotPassword = async (req, res, next) => {
             });
         }
 
-        // Invalidate any previous unused tokens for this user
         await PasswordResetToken.destroy({
             where: { user_id: user.user_id, used: false },
         });
 
-        // Generate a secure random token (32 bytes → 64 hex chars)
         const rawToken = crypto.randomBytes(32).toString('hex');
-
-        // Expires in 1 hour
         const expires_at = new Date(Date.now() + 60 * 60 * 1000);
 
         await PasswordResetToken.create({
@@ -159,7 +154,6 @@ const forgotPassword = async (req, res, next) => {
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
         const resetUrl = `${frontendUrl}/auth/reset-password?token=${rawToken}`;
 
-        // Send via Ethereal (fake SMTP) — check terminal for the preview URL
         await sendMail({
             to: user.email,
             subject: 'Reset your ReportFlow password',
@@ -209,7 +203,7 @@ const resetPassword = async (req, res, next) => {
             where: {
                 token,
                 used: false,
-                expires_at: { [Op.gt]: new Date() }, // not expired
+                expires_at: { [Op.gt]: new Date() },
             },
         });
 
@@ -220,11 +214,8 @@ const resetPassword = async (req, res, next) => {
             });
         }
 
-        // Hash and save the new password
         const password_hash = await bcrypt.hash(password, 12);
         await User.update({ password_hash }, { where: { user_id: record.user_id } });
-
-        // Burn the token — one-time use only
         await record.update({ used: true });
 
         return res.status(200).json({
@@ -236,4 +227,46 @@ const resetPassword = async (req, res, next) => {
     }
 };
 
-module.exports = { register, login, getMe, forgotPassword, resetPassword };
+// ─── PATCH /api/auth/profile (NEW) ───────────────────────────
+const updateProfile = async (req, res, next) => {
+    try {
+        const { full_name } = req.body;
+        if (!full_name) return res.status(400).json({ success: false, error: 'Name is required' });
+
+        const user = await User.findByPk(req.user.id);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+        await user.update({ full_name });
+        res.json({ success: true, message: 'Profile updated' });
+    } catch (err) {
+        next(err);
+    }
+};
+
+// ─── PATCH /api/auth/password (NEW) ──────────────────────────
+const updatePassword = async (req, res, next) => {
+    try {
+        const { current_password, new_password } = req.body;
+        const user = await User.scope('withPassword').findByPk(req.user.id);
+
+        const isMatch = await bcrypt.compare(current_password, user.password_hash);
+        if (!isMatch) return res.status(401).json({ success: false, error: 'Current password incorrect' });
+
+        const password_hash = await bcrypt.hash(new_password, 12);
+        await user.update({ password_hash });
+
+        res.json({ success: true, message: 'Password updated' });
+    } catch (err) {
+        next(err);
+    }
+};
+
+module.exports = {
+    register,
+    login,
+    getMe,
+    forgotPassword,
+    resetPassword,
+    updateProfile,
+    updatePassword
+};
