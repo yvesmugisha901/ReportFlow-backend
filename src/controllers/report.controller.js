@@ -7,22 +7,54 @@ const getAllReports = async (req, res, next) => {
         const where = {};
         const userId = req.user.id;
 
+        // ── Role scoping ──────────────────────────────────────
         if (req.user.role === 'employee') {
             where.employee_id = userId;
         }
 
-        if (req.query.status) where.status = req.query.status;
+        // ── Status filter ─────────────────────────────────────
+        if (req.query.status) {
+            where.status = req.query.status;
+        }
+
+        // ── Employee filter (non-employee roles only) ─────────
         if (req.query.employee_id && req.user.role !== 'employee') {
             where.employee_id = req.query.employee_id;
         }
 
+        // ── Title search ──────────────────────────────────────
         if (req.query.search) {
             where.title = { [Op.iLike]: `%${req.query.search}%` };
         }
 
+        // ── Date range filter on submitted_at ─────────────────
+        // Frontend sends: date_from=YYYY-MM-DD & date_to=YYYY-MM-DD
+        if (req.query.date_from || req.query.date_to) {
+            where.submitted_at = {};
+            if (req.query.date_from) {
+                // Start of the "from" day (00:00:00)
+                where.submitted_at[Op.gte] = new Date(req.query.date_from);
+            }
+            if (req.query.date_to) {
+                // End of the "to" day (23:59:59.999) so the selected day is fully included
+                const end = new Date(req.query.date_to);
+                end.setHours(23, 59, 59, 999);
+                where.submitted_at[Op.lte] = end;
+            }
+        }
+
+        // ── Pagination ────────────────────────────────────────
         const page = Math.max(parseInt(req.query.page) || 1, 1);
-        const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+        const limit = Math.min(parseInt(req.query.limit) || 15, 100);
         const offset = (page - 1) * limit;
+
+        // ── Department filter ─────────────────────────────────
+        // Reports don't have dept_id directly; the chain is:
+        //   Report → employee (User) → department (Department)
+        // We apply the filter as a WHERE on the nested department include.
+        const deptId = req.query.dept_id && req.user.role !== 'employee'
+            ? req.query.dept_id
+            : null;
 
         const { count, rows: reports } = await Report.findAndCountAll({
             where,
@@ -30,18 +62,33 @@ const getAllReports = async (req, res, next) => {
                 {
                     association: 'employee',
                     attributes: ['user_id', 'full_name', 'email'],
+                    // When deptId is present, require the join so that reports
+                    // whose employee has a different (or null) dept are excluded.
+                    required: !!deptId,
                     include: [
-                        { association: 'department', attributes: ['dept_id', 'name'] },
+                        {
+                            association: 'department',
+                            attributes: ['dept_id', 'name'],
+                            // This is the key part: filter inside the nested include.
+                            ...(deptId ? { where: { dept_id: deptId } } : {}),
+                            required: !!deptId,
+                        },
                     ],
                 },
-                { association: 'schedule', attributes: ['schedule_id', 'title', 'deadline', 'frequency'] },
+                {
+                    association: 'schedule',
+                    attributes: ['schedule_id', 'title', 'deadline', 'frequency'],
+                },
                 {
                     association: 'reviewLogs',
-                    include: [{ association: 'reviewer', attributes: ['user_id', 'full_name', 'role'] }],
+                    include: [
+                        { association: 'reviewer', attributes: ['user_id', 'full_name', 'role'] },
+                    ],
                     separate: true,
                     order: [['created_at', 'ASC']],
                 },
             ],
+            distinct: true, // required when using separate:true + findAndCountAll
             order: [['created_at', 'DESC']],
             limit,
             offset,
@@ -95,7 +142,6 @@ const getReportById = async (req, res, next) => {
 };
 
 // ─── POST /api/reports ────────────────────────────────────────
-// Creates AND immediately submits the report in one step.
 const createReport = async (req, res, next) => {
     try {
         const userId = req.user.id;
@@ -105,7 +151,6 @@ const createReport = async (req, res, next) => {
             return res.status(400).json({ success: false, error: 'Title is required' });
         }
 
-        // Validate schedule if provided
         if (schedule_id) {
             const schedule = await ReportSchedule.findByPk(schedule_id);
             if (!schedule) {
@@ -113,12 +158,9 @@ const createReport = async (req, res, next) => {
             }
         }
 
-        // req.file.path is already normalized to "/uploads/reports/filename.ext"
-        // by the normalizeFilePath middleware in report.routes.js
         const file_path = req.file ? req.file.path : null;
         const file_name = req.file ? req.file.originalname : null;
 
-        // Require at least content/summary OR a file
         const resolvedContent = content?.trim() || summary?.trim() || null;
         if (!resolvedContent && !file_path) {
             return res.status(400).json({
@@ -127,7 +169,6 @@ const createReport = async (req, res, next) => {
             });
         }
 
-        // Determine if late
         let is_late = false;
         const now = new Date();
         if (schedule_id) {
@@ -137,7 +178,6 @@ const createReport = async (req, res, next) => {
             }
         }
 
-        // Create and immediately mark as submitted in one step
         const report = await Report.create({
             schedule_id: schedule_id || null,
             employee_id: userId,
@@ -145,8 +185,8 @@ const createReport = async (req, res, next) => {
             content: resolvedContent,
             file_path,
             file_name,
-            status: 'submitted',       // ← submit immediately on create
-            submitted_at: now,         // ← stamp submission time
+            status: 'submitted',
+            submitted_at: now,
             is_late,
         });
 
@@ -157,7 +197,6 @@ const createReport = async (req, res, next) => {
 };
 
 // ─── PATCH /api/reports/:id/submit ───────────────────────────
-// Kept for resubmission after changes_requested
 const submitReport = async (req, res, next) => {
     try {
         const userId = req.user.id;
@@ -166,11 +205,9 @@ const submitReport = async (req, res, next) => {
         if (!report) {
             return res.status(404).json({ success: false, error: 'Report not found' });
         }
-
         if (report.employee_id !== userId) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
-
         if (!['pending', 'changes_requested'].includes(report.status)) {
             return res.status(400).json({
                 success: false,
@@ -180,16 +217,12 @@ const submitReport = async (req, res, next) => {
 
         const now = new Date();
         let is_late = false;
-
         if (report.schedule_id) {
             const schedule = await ReportSchedule.findByPk(report.schedule_id);
-            if (schedule?.deadline) {
-                is_late = now > new Date(schedule.deadline);
-            }
+            if (schedule?.deadline) is_late = now > new Date(schedule.deadline);
         }
 
         await report.update({ status: 'submitted', submitted_at: now, is_late });
-
         res.json({ success: true, report });
     } catch (err) {
         next(err);
@@ -205,11 +238,9 @@ const updateReport = async (req, res, next) => {
         if (!report) {
             return res.status(404).json({ success: false, error: 'Report not found' });
         }
-
         if (report.employee_id !== userId) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
-
         if (!['pending', 'changes_requested'].includes(report.status)) {
             return res.status(400).json({
                 success: false,
