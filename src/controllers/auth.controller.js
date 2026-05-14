@@ -81,19 +81,20 @@ const login = async (req, res, next) => {
             return res.status(401).json({ success: false, error: 'Invalid email or password' });
         }
 
+        // ✅ Fetch full user with nested department & team associations
+        const fullUser = await User.findByPk(user.user_id, {
+            include: [
+                { association: 'department', attributes: ['dept_id', 'name'] },
+                { association: 'team', attributes: ['team_id', 'name'] },
+            ],
+        });
+
         const token = generateToken(user);
 
         res.json({
             success: true,
             token,
-            user: {
-                user_id: user.user_id,
-                full_name: user.full_name,
-                email: user.email,
-                role: user.role,
-                dept_id: user.dept_id,
-                team_id: user.team_id,
-            },
+            user: fullUser, // ✅ now includes department: { dept_id, name }
         });
     } catch (err) {
         next(err);
@@ -227,7 +228,7 @@ const resetPassword = async (req, res, next) => {
     }
 };
 
-// ─── PATCH /api/auth/profile (NEW) ───────────────────────────
+// ─── PATCH /api/auth/profile ──────────────────────────────────
 const updateProfile = async (req, res, next) => {
     try {
         const { full_name } = req.body;
@@ -243,7 +244,7 @@ const updateProfile = async (req, res, next) => {
     }
 };
 
-// ─── PATCH /api/auth/password (NEW) ──────────────────────────
+// ─── PATCH /api/auth/password ─────────────────────────────────
 const updatePassword = async (req, res, next) => {
     try {
         const { current_password, new_password } = req.body;
@@ -268,5 +269,5 @@ module.exports = {
     forgotPassword,
     resetPassword,
     updateProfile,
-    updatePassword
+    updatePassword,
 };

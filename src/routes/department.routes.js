@@ -1,28 +1,20 @@
 const express = require('express');
 const router = express.Router();
+const { protect, authorize } = require('../middlewares/auth');
 const {
     getAllDepartments,
     getDepartmentById,
+    getDeptCompliance,
     createDepartment,
     updateDepartment,
     deleteDepartment,
 } = require('../controllers/department.controller');
-const { protect, authorize } = require('../middlewares/auth');
 
-// ─── PUBLIC (no token required) ───────────────────────────────
-// Used on the register page before the user has a token
-router.get('/', getAllDepartments);
-
-// ─── PROTECTED (token required from here down) ────────────────
-router.use(protect);
-
-// GET/PUT/DELETE /api/departments/:id
-router.route('/:id')
-    .get(getDepartmentById)
-    .put(authorize('admin'), updateDepartment)
-    .delete(authorize('admin'), deleteDepartment);
-
-// POST /api/departments      ← admin only
-router.post('/', authorize('admin'), createDepartment);
+router.get('/', protect, getAllDepartments);
+router.get('/:id/compliance', protect, getDeptCompliance);  // ✅ must be before /:id
+router.get('/:id', protect, getDepartmentById);
+router.post('/', protect, authorize('admin'), createDepartment);
+router.put('/:id', protect, authorize('admin'), updateDepartment);
+router.delete('/:id', protect, authorize('admin'), deleteDepartment);
 
 module.exports = router;
