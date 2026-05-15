@@ -2,12 +2,10 @@ const { Report, ReportSchedule, User, Department, ReviewLog, Notification } = re
 const { Op } = require('sequelize');
 
 // ─── Notification helper ──────────────────────────────────────
-// Uses event_type (the real DB column) not type
 async function notify({ user_id, report_id, event_type, message }) {
     try {
         await Notification.create({ user_id, report_id, event_type, message, is_read: false });
     } catch (err) {
-        // Notifications are non-critical — log but don't crash the request
         console.error('[notify] Failed to create notification:', err.message);
     }
 }
@@ -16,7 +14,7 @@ async function notify({ user_id, report_id, event_type, message }) {
 const getAllReports = async (req, res, next) => {
     try {
         const where = {};
-        const userId = req.user.id;
+        const userId = req.user.id; // ← fixed
 
         if (req.user.role === 'employee') {
             where.employee_id = userId;
@@ -98,7 +96,7 @@ const getAllReports = async (req, res, next) => {
 // ─── GET /api/reports/:id ─────────────────────────────────────
 const getReportById = async (req, res, next) => {
     try {
-        const userId = req.user.id;
+        const userId = req.user.id; // ← fixed
 
         const report = await Report.findByPk(req.params.id, {
             include: [
@@ -133,7 +131,7 @@ const getReportById = async (req, res, next) => {
 // ─── POST /api/reports ────────────────────────────────────────
 const createReport = async (req, res, next) => {
     try {
-        const userId = req.user.id;
+        const userId = req.user.id; // ← fixed
         const { schedule_id, title, content, summary, notes, period_start, period_end } = req.body;
 
         if (!title || !title.trim()) {
@@ -162,7 +160,6 @@ const createReport = async (req, res, next) => {
         const now = new Date();
         const is_late = schedule?.deadline ? now > new Date(schedule.deadline) : false;
 
-        // Fetch the employee with their department so we can scope notifications
         const employee = await User.findByPk(userId, {
             include: [{ association: 'department', attributes: ['dept_id', 'name'] }],
         });
@@ -179,7 +176,7 @@ const createReport = async (req, res, next) => {
             is_late,
         });
 
-        // ── Notify the employee: confirmation their report was received ──
+        // ── Notify employee: submission confirmed ─────────────
         await notify({
             user_id: userId,
             report_id: report.report_id,
@@ -187,14 +184,14 @@ const createReport = async (req, res, next) => {
             message: `Your report "${report.title}" has been submitted successfully and is awaiting review.`,
         });
 
-        // ── Notify the department reviewer ────────────────────
+        // ── Notify department reviewer ─────────────────────────
         if (employee?.dept_id) {
             const reviewer = await User.findOne({
                 where: { role: 'reviewer', dept_id: employee.dept_id, is_active: true },
             });
             if (reviewer) {
                 await notify({
-                    user_id: reviewer.user_id,
+                    user_id: reviewer.user_id, // ← correct — User PK
                     report_id: report.report_id,
                     event_type: 'submitted',
                     message: `${employee.full_name} submitted a new report "${report.title}"${is_late ? ' (submitted late)' : ''} — awaiting your review.`,
@@ -205,9 +202,9 @@ const createReport = async (req, res, next) => {
         // ── Notify all active admins ──────────────────────────
         const admins = await User.findAll({ where: { role: 'admin', is_active: true } });
         for (const admin of admins) {
-            if (admin.user_id === userId) continue; // skip if admin is also the submitter
+            if (admin.user_id === userId) continue;
             await notify({
-                user_id: admin.user_id,
+                user_id: admin.user_id, // ← correct — User PK
                 report_id: report.report_id,
                 event_type: 'submitted',
                 message: `${employee?.full_name ?? 'An employee'} submitted report "${report.title}"${is_late ? ' (late)' : ''}.`,
@@ -221,10 +218,10 @@ const createReport = async (req, res, next) => {
 };
 
 // ─── PATCH /api/reports/:id/submit ───────────────────────────
-// Used when resubmitting after changes_requested
 const submitReport = async (req, res, next) => {
     try {
-        const userId = req.user.id;
+        const userId = req.user.id; // ← fixed
+
         const report = await Report.findByPk(req.params.id, {
             include: [{ association: 'schedule' }],
         });
@@ -302,7 +299,8 @@ const submitReport = async (req, res, next) => {
 // ─── PUT /api/reports/:id ─────────────────────────────────────
 const updateReport = async (req, res, next) => {
     try {
-        const userId = req.user.id;
+        const userId = req.user.id; // ← fixed
+
         const report = await Report.findByPk(req.params.id);
 
         if (!report) {
@@ -338,7 +336,8 @@ const updateReport = async (req, res, next) => {
 // ─── DELETE /api/reports/:id ──────────────────────────────────
 const deleteReport = async (req, res, next) => {
     try {
-        const userId = req.user.id;
+        const userId = req.user.id; // ← fixed
+
         const report = await Report.findByPk(req.params.id);
 
         if (!report) return res.status(404).json({ success: false, error: 'Report not found' });

@@ -3,8 +3,10 @@ const { Notification } = require('../models');
 // ─── GET /api/notifications ───────────────────────────────────
 const getMyNotifications = async (req, res, next) => {
     try {
+        const userId = req.user.id;
+
         const notifications = await Notification.findAll({
-            where: { user_id: req.user.id },
+            where: { user_id: userId },
             order: [['created_at', 'DESC']],
         });
 
@@ -20,12 +22,15 @@ const getMyNotifications = async (req, res, next) => {
 // ─── GET /api/notifications/unread-count ─────────────────────
 const getUnreadCount = async (req, res, next) => {
     try {
+        const userId = req.user.id;
+
         const count = await Notification.count({
-            where: { user_id: req.user.id, is_read: false },
+            where: { user_id: userId, is_read: false },
         });
 
         res.set('Cache-Control', 'no-store');
-        res.json({ success: true, count });
+        // Return both `count` and `unread_count` so any frontend shape works
+        res.json({ success: true, count, unread_count: count });
     } catch (err) {
         next(err);
     }
@@ -34,8 +39,10 @@ const getUnreadCount = async (req, res, next) => {
 // ─── PATCH /api/notifications/:id/read ───────────────────────
 const markAsRead = async (req, res, next) => {
     try {
+        const userId = req.user.id;
+
         const notif = await Notification.findOne({
-            where: { notif_id: req.params.id, user_id: req.user.id },
+            where: { notif_id: req.params.id, user_id: userId },
         });
 
         if (!notif) {
@@ -54,9 +61,11 @@ const markAsRead = async (req, res, next) => {
 // ─── PATCH /api/notifications/mark-all-read ──────────────────
 const markAllAsRead = async (req, res, next) => {
     try {
+        const userId = req.user.id;
+
         await Notification.update(
             { is_read: true },
-            { where: { user_id: req.user.id, is_read: false } }
+            { where: { user_id: userId, is_read: false } }
         );
 
         res.set('Cache-Control', 'no-store');
@@ -69,8 +78,10 @@ const markAllAsRead = async (req, res, next) => {
 // ─── DELETE /api/notifications/:id ───────────────────────────
 const deleteNotification = async (req, res, next) => {
     try {
+        const userId = req.user.id;
+
         const notif = await Notification.findOne({
-            where: { notif_id: req.params.id, user_id: req.user.id },
+            where: { notif_id: req.params.id, user_id: userId },
         });
 
         if (!notif) {
@@ -89,8 +100,10 @@ const deleteNotification = async (req, res, next) => {
 // ─── DELETE /api/notifications/read ──────────────────────────
 const deleteAllRead = async (req, res, next) => {
     try {
+        const userId = req.user.id;
+
         await Notification.destroy({
-            where: { user_id: req.user.id, is_read: true },
+            where: { user_id: userId, is_read: true },
         });
 
         res.set('Cache-Control', 'no-store');
