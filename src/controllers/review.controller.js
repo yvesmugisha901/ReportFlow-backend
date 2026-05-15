@@ -2,7 +2,7 @@ const { Report, ReviewLog, Notification, User, Department } = require('../models
 
 const notify = async (user_id, report_id, event_type, message) => {
     try {
-        await Notification.create({ user_id, report_id, event_type, message });
+        await Notification.create({ user_id, report_id, event_type, message, is_read: false });
     } catch (err) {
         console.error('Notification error:', err.message);
     }
@@ -77,7 +77,9 @@ const reviewReport = async (req, res, next) => {
         const { role, id: reviewerId } = req.user;
 
         const report = await Report.findByPk(req.params.reportId, {
-            include: [{ association: 'employee', attributes: ['user_id', 'full_name'] }],
+            include: [
+                { association: 'employee', attributes: ['user_id', 'full_name', 'dept_id'] },
+            ],
         });
 
         if (!report) {
@@ -126,7 +128,7 @@ const reviewReport = async (req, res, next) => {
                 changes_requested: 'changes_requested',
             },
             stage_2: {
-                approved: 'approved',
+                approved: 'final_approved',
                 rejected: 'rejected',
                 changes_requested: 'changes_requested',
             },
@@ -142,15 +144,74 @@ const reviewReport = async (req, res, next) => {
 
         await report.update({ status: nextStatus });
 
-        const msgMap = {
-            approved: rule.stage === 'stage_1'
-                ? `Your report "${report.title}" passed Stage 1 review and is now with the final approver.`
-                : `Your report "${report.title}" has been fully approved! 🎉`,
-            rejected: `Your report "${report.title}" was rejected. ${comment ? `Reason: ${comment}` : ''}`,
-            changes_requested: `Changes requested on "${report.title}". ${comment ? `Note: ${comment}` : 'See review log for details.'}`,
+        // ── Notify the employee ────────────────────────────────
+        const employeeMessages = {
+            stage_1: {
+                approved: `Your report "${report.title}" passed Stage 1 review and is now with the final approver.`,
+                rejected: `Your report "${report.title}" was rejected. ${comment ? `Reason: ${comment}` : ''}`,
+                changes_requested: `Changes requested on "${report.title}". ${comment ? `Note: ${comment}` : 'See review log for details.'}`,
+            },
+            stage_2: {
+                approved: `Your report "${report.title}" has been fully approved!`,
+                rejected: `Your report "${report.title}" was rejected at final approval. ${comment ? `Reason: ${comment}` : ''}`,
+                changes_requested: `Changes requested on "${report.title}" by the final approver. ${comment ? `Note: ${comment}` : ''}`,
+            },
         };
 
-        await notify(report.employee_id, report.report_id, normalizedAction, msgMap[normalizedAction]);
+        await notify(
+            report.employee_id,
+            report.report_id,
+            normalizedAction === 'approved' && rule.stage === 'stage_2' ? 'final_approved' : normalizedAction,
+            employeeMessages[rule.stage][normalizedAction]
+        );
+
+        // ── Stage 1 approved → notify all active approvers ────
+        if (rule.stage === 'stage_1' && normalizedAction === 'approved') {
+            const approvers = await User.findAll({ where: { role: 'approver', is_active: true } });
+            for (const approver of approvers) {
+                await notify(
+                    approver.user_id,
+                    report.report_id,
+                    'under_review',
+                    `Report "${report.title}" by ${report.employee?.full_name ?? 'an employee'} passed Stage 1 and is awaiting your final approval.`
+                );
+            }
+        }
+
+        // ── Stage 2 acted → notify the department reviewer ────
+        if (rule.stage === 'stage_2') {
+            const deptId = report.employee?.dept_id;
+            if (deptId) {
+                const reviewer = await User.findOne({
+                    where: { role: 'reviewer', dept_id: deptId, is_active: true },
+                });
+                if (reviewer) {
+                    const reviewerMessages = {
+                        approved: `Report "${report.title}" you reviewed has been fully approved by the final approver.`,
+                        rejected: `Report "${report.title}" you reviewed was rejected at final approval. ${comment ? `Reason: ${comment}` : ''}`,
+                        changes_requested: `The final approver requested changes on report "${report.title}" you reviewed.`,
+                    };
+                    await notify(
+                        reviewer.user_id,
+                        report.report_id,
+                        normalizedAction === 'approved' ? 'final_approved' : normalizedAction,
+                        reviewerMessages[normalizedAction]
+                    );
+                }
+            }
+
+            // ── Stage 2 acted → notify all admins ─────────────
+            const admins = await User.findAll({ where: { role: 'admin', is_active: true } });
+            for (const admin of admins) {
+                if (admin.user_id === reviewerId) continue;
+                await notify(
+                    admin.user_id,
+                    report.report_id,
+                    normalizedAction === 'approved' ? 'final_approved' : normalizedAction,
+                    `Report "${report.title}" final decision: ${nextStatus.replace(/_/g, ' ').toUpperCase()}.`
+                );
+            }
+        }
 
         res.json({ success: true, message: `Report ${normalizedAction}`, status: nextStatus });
     } catch (err) {
@@ -158,8 +219,7 @@ const reviewReport = async (req, res, next) => {
     }
 };
 
-// ─── GET /api/reviews/logs (all logs, admin) ──────────────────
-// ─── GET /api/reviews/:reportId/logs (single report) ─────────
+// ─── GET /api/reviews/logs ────────────────────────────────────
 const getReviewLogs = async (req, res, next) => {
     try {
         const { reportId } = req.params;
@@ -191,8 +251,7 @@ const getReviewLogs = async (req, res, next) => {
     }
 };
 
-// ─── GET /api/reviews/my-history ──────────────────────────────
-// Returns all reports the logged-in reviewer/approver has acted on
+// ─── GET /api/reviews/my-history ─────────────────────────────
 const getMyReviewHistory = async (req, res, next) => {
     try {
         const { id: reviewerId } = req.user;
