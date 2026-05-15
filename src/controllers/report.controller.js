@@ -1,57 +1,55 @@
 const { Report, ReportSchedule, User, Department, ReviewLog, Notification } = require('../models');
 const { Op } = require('sequelize');
 
+// ─── Notification helper ──────────────────────────────────────
+// Uses event_type (the real DB column) not type
+async function notify({ user_id, report_id, event_type, message }) {
+    try {
+        await Notification.create({ user_id, report_id, event_type, message, is_read: false });
+    } catch (err) {
+        // Notifications are non-critical — log but don't crash the request
+        console.error('[notify] Failed to create notification:', err.message);
+    }
+}
+
 // ─── GET /api/reports ─────────────────────────────────────────
 const getAllReports = async (req, res, next) => {
     try {
         const where = {};
         const userId = req.user.id;
 
-        // ── Role scoping ──────────────────────────────────────
         if (req.user.role === 'employee') {
             where.employee_id = userId;
         }
 
-        // ── Status filter ─────────────────────────────────────
         if (req.query.status) {
             where.status = req.query.status;
         }
 
-        // ── Employee filter (non-employee roles only) ─────────
         if (req.query.employee_id && req.user.role !== 'employee') {
             where.employee_id = req.query.employee_id;
         }
 
-        // ── Title search ──────────────────────────────────────
         if (req.query.search) {
             where.title = { [Op.iLike]: `%${req.query.search}%` };
         }
 
-        // ── Date range filter on submitted_at ─────────────────
-        // Frontend sends: date_from=YYYY-MM-DD & date_to=YYYY-MM-DD
         if (req.query.date_from || req.query.date_to) {
             where.submitted_at = {};
             if (req.query.date_from) {
-                // Start of the "from" day (00:00:00)
                 where.submitted_at[Op.gte] = new Date(req.query.date_from);
             }
             if (req.query.date_to) {
-                // End of the "to" day (23:59:59.999) so the selected day is fully included
                 const end = new Date(req.query.date_to);
                 end.setHours(23, 59, 59, 999);
                 where.submitted_at[Op.lte] = end;
             }
         }
 
-        // ── Pagination ────────────────────────────────────────
         const page = Math.max(parseInt(req.query.page) || 1, 1);
         const limit = Math.min(parseInt(req.query.limit) || 15, 100);
         const offset = (page - 1) * limit;
 
-        // ── Department filter ─────────────────────────────────
-        // Reports don't have dept_id directly; the chain is:
-        //   Report → employee (User) → department (Department)
-        // We apply the filter as a WHERE on the nested department include.
         const deptId = req.query.dept_id && req.user.role !== 'employee'
             ? req.query.dept_id
             : null;
@@ -62,14 +60,11 @@ const getAllReports = async (req, res, next) => {
                 {
                     association: 'employee',
                     attributes: ['user_id', 'full_name', 'email'],
-                    // When deptId is present, require the join so that reports
-                    // whose employee has a different (or null) dept are excluded.
                     required: !!deptId,
                     include: [
                         {
                             association: 'department',
                             attributes: ['dept_id', 'name'],
-                            // This is the key part: filter inside the nested include.
                             ...(deptId ? { where: { dept_id: deptId } } : {}),
                             required: !!deptId,
                         },
@@ -88,19 +83,13 @@ const getAllReports = async (req, res, next) => {
                     order: [['created_at', 'ASC']],
                 },
             ],
-            distinct: true, // required when using separate:true + findAndCountAll
+            distinct: true,
             order: [['created_at', 'DESC']],
             limit,
             offset,
         });
 
-        res.json({
-            success: true,
-            count,
-            totalPages: Math.ceil(count / limit),
-            page,
-            reports,
-        });
+        res.json({ success: true, count, totalPages: Math.ceil(count / limit), page, reports });
     } catch (err) {
         next(err);
     }
@@ -151,8 +140,9 @@ const createReport = async (req, res, next) => {
             return res.status(400).json({ success: false, error: 'Title is required' });
         }
 
+        let schedule = null;
         if (schedule_id) {
-            const schedule = await ReportSchedule.findByPk(schedule_id);
+            schedule = await ReportSchedule.findByPk(schedule_id);
             if (!schedule) {
                 return res.status(404).json({ success: false, error: 'Schedule not found' });
             }
@@ -169,14 +159,13 @@ const createReport = async (req, res, next) => {
             });
         }
 
-        let is_late = false;
         const now = new Date();
-        if (schedule_id) {
-            const schedule = await ReportSchedule.findByPk(schedule_id);
-            if (schedule?.deadline) {
-                is_late = now > new Date(schedule.deadline);
-            }
-        }
+        const is_late = schedule?.deadline ? now > new Date(schedule.deadline) : false;
+
+        // Fetch the employee with their department so we can scope notifications
+        const employee = await User.findByPk(userId, {
+            include: [{ association: 'department', attributes: ['dept_id', 'name'] }],
+        });
 
         const report = await Report.create({
             schedule_id: schedule_id || null,
@@ -190,6 +179,41 @@ const createReport = async (req, res, next) => {
             is_late,
         });
 
+        // ── Notify the employee: confirmation their report was received ──
+        await notify({
+            user_id: userId,
+            report_id: report.report_id,
+            event_type: 'submitted',
+            message: `Your report "${report.title}" has been submitted successfully and is awaiting review.`,
+        });
+
+        // ── Notify the department reviewer ────────────────────
+        if (employee?.dept_id) {
+            const reviewer = await User.findOne({
+                where: { role: 'reviewer', dept_id: employee.dept_id, is_active: true },
+            });
+            if (reviewer) {
+                await notify({
+                    user_id: reviewer.user_id,
+                    report_id: report.report_id,
+                    event_type: 'submitted',
+                    message: `${employee.full_name} submitted a new report "${report.title}"${is_late ? ' (submitted late)' : ''} — awaiting your review.`,
+                });
+            }
+        }
+
+        // ── Notify all active admins ──────────────────────────
+        const admins = await User.findAll({ where: { role: 'admin', is_active: true } });
+        for (const admin of admins) {
+            if (admin.user_id === userId) continue; // skip if admin is also the submitter
+            await notify({
+                user_id: admin.user_id,
+                report_id: report.report_id,
+                event_type: 'submitted',
+                message: `${employee?.full_name ?? 'An employee'} submitted report "${report.title}"${is_late ? ' (late)' : ''}.`,
+            });
+        }
+
         res.status(201).json({ success: true, report });
     } catch (err) {
         next(err);
@@ -197,10 +221,13 @@ const createReport = async (req, res, next) => {
 };
 
 // ─── PATCH /api/reports/:id/submit ───────────────────────────
+// Used when resubmitting after changes_requested
 const submitReport = async (req, res, next) => {
     try {
         const userId = req.user.id;
-        const report = await Report.findByPk(req.params.id);
+        const report = await Report.findByPk(req.params.id, {
+            include: [{ association: 'schedule' }],
+        });
 
         if (!report) {
             return res.status(404).json({ success: false, error: 'Report not found' });
@@ -216,13 +243,56 @@ const submitReport = async (req, res, next) => {
         }
 
         const now = new Date();
-        let is_late = false;
-        if (report.schedule_id) {
-            const schedule = await ReportSchedule.findByPk(report.schedule_id);
-            if (schedule?.deadline) is_late = now > new Date(schedule.deadline);
+        const is_late = report.schedule?.deadline
+            ? now > new Date(report.schedule.deadline)
+            : false;
+
+        const wasChangesRequested = report.status === 'changes_requested';
+        await report.update({ status: 'submitted', submitted_at: now, is_late });
+
+        const employee = await User.findByPk(userId, {
+            include: [{ association: 'department', attributes: ['dept_id', 'name'] }],
+        });
+
+        // ── Notify employee: resubmission confirmed ───────────
+        await notify({
+            user_id: userId,
+            report_id: report.report_id,
+            event_type: 'submitted',
+            message: wasChangesRequested
+                ? `Your updated report "${report.title}" has been resubmitted for review.`
+                : `Your report "${report.title}" has been submitted successfully.`,
+        });
+
+        // ── Notify department reviewer ─────────────────────────
+        if (employee?.dept_id) {
+            const reviewer = await User.findOne({
+                where: { role: 'reviewer', dept_id: employee.dept_id, is_active: true },
+            });
+            if (reviewer) {
+                await notify({
+                    user_id: reviewer.user_id,
+                    report_id: report.report_id,
+                    event_type: 'submitted',
+                    message: wasChangesRequested
+                        ? `${employee.full_name} resubmitted report "${report.title}" after changes — ready for review.`
+                        : `${employee.full_name} submitted report "${report.title}"${is_late ? ' (late)' : ''} — awaiting review.`,
+                });
+            }
         }
 
-        await report.update({ status: 'submitted', submitted_at: now, is_late });
+        // ── Notify admins ──────────────────────────────────────
+        const admins = await User.findAll({ where: { role: 'admin', is_active: true } });
+        for (const admin of admins) {
+            if (admin.user_id === userId) continue;
+            await notify({
+                user_id: admin.user_id,
+                report_id: report.report_id,
+                event_type: 'submitted',
+                message: `${employee?.full_name ?? 'An employee'} submitted report "${report.title}"${is_late ? ' (late)' : ''}.`,
+            });
+        }
+
         res.json({ success: true, report });
     } catch (err) {
         next(err);
