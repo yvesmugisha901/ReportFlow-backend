@@ -1,5 +1,6 @@
 const { Report, ReportSchedule, User, Department, ReviewLog, Notification } = require('../models');
 const { Op } = require('sequelize');
+const { getCurrentPeriod } = require('../utils/schedulePeriod');
 
 // ─── Notification helper ──────────────────────────────────────
 async function notify({ user_id, report_id, event_type, message }) {
@@ -14,7 +15,7 @@ async function notify({ user_id, report_id, event_type, message }) {
 const getAllReports = async (req, res, next) => {
     try {
         const where = {};
-        const userId = req.user.id; // ← fixed
+        const userId = req.user.id;
 
         if (req.user.role === 'employee') {
             where.employee_id = userId;
@@ -96,7 +97,7 @@ const getAllReports = async (req, res, next) => {
 // ─── GET /api/reports/:id ─────────────────────────────────────
 const getReportById = async (req, res, next) => {
     try {
-        const userId = req.user.id; // ← fixed
+        const userId = req.user.id;
 
         const report = await Report.findByPk(req.params.id, {
             include: [
@@ -131,18 +132,55 @@ const getReportById = async (req, res, next) => {
 // ─── POST /api/reports ────────────────────────────────────────
 const createReport = async (req, res, next) => {
     try {
-        const userId = req.user.id; // ← fixed
-        const { schedule_id, title, content, summary, notes, period_start, period_end } = req.body;
+        const userId = req.user.id;
+        const { schedule_id, title, content, summary } = req.body;
 
         if (!title || !title.trim()) {
             return res.status(400).json({ success: false, error: 'Title is required' });
         }
+
+        const employee = await User.findByPk(userId, {
+            include: [{ association: 'department', attributes: ['dept_id', 'name'] }],
+        });
 
         let schedule = null;
         if (schedule_id) {
             schedule = await ReportSchedule.findByPk(schedule_id);
             if (!schedule) {
                 return res.status(404).json({ success: false, error: 'Schedule not found' });
+            }
+
+            // ── Department/team scoping ────────────────────────
+            // An employee can only submit against a schedule that is company-wide
+            // (dept_id null) or matches their own department/team.
+            if (req.user.role === 'employee') {
+                const belongsToDept = !schedule.dept_id || schedule.dept_id === employee.dept_id;
+                const belongsToTeam = !schedule.team_id || schedule.team_id === employee.team_id;
+                if (!belongsToDept || !belongsToTeam) {
+                    return res.status(403).json({
+                        success: false,
+                        error: 'This schedule does not belong to your department or team',
+                    });
+                }
+
+                // ── Duplicate-period check ─────────────────────
+                // Prevents submitting a second report for the same recurring
+                // window (e.g. same week for a weekly schedule).
+                const period = getCurrentPeriod(schedule);
+                const existing = await Report.findOne({
+                    where: {
+                        schedule_id: schedule.schedule_id,
+                        employee_id: userId,
+                        submitted_at: { [Op.between]: [period.periodStart, period.periodEnd] },
+                    },
+                });
+                if (existing) {
+                    return res.status(409).json({
+                        success: false,
+                        error: `You've already submitted "${schedule.title}" for the current period.`,
+                        existingReportId: existing.report_id,
+                    });
+                }
             }
         }
 
@@ -159,10 +197,6 @@ const createReport = async (req, res, next) => {
 
         const now = new Date();
         const is_late = schedule?.deadline ? now > new Date(schedule.deadline) : false;
-
-        const employee = await User.findByPk(userId, {
-            include: [{ association: 'department', attributes: ['dept_id', 'name'] }],
-        });
 
         const report = await Report.create({
             schedule_id: schedule_id || null,
@@ -191,7 +225,7 @@ const createReport = async (req, res, next) => {
             });
             if (reviewer) {
                 await notify({
-                    user_id: reviewer.user_id, // ← correct — User PK
+                    user_id: reviewer.user_id,
                     report_id: report.report_id,
                     event_type: 'submitted',
                     message: `${employee.full_name} submitted a new report "${report.title}"${is_late ? ' (submitted late)' : ''} — awaiting your review.`,
@@ -204,7 +238,7 @@ const createReport = async (req, res, next) => {
         for (const admin of admins) {
             if (admin.user_id === userId) continue;
             await notify({
-                user_id: admin.user_id, // ← correct — User PK
+                user_id: admin.user_id,
                 report_id: report.report_id,
                 event_type: 'submitted',
                 message: `${employee?.full_name ?? 'An employee'} submitted report "${report.title}"${is_late ? ' (late)' : ''}.`,
@@ -220,7 +254,7 @@ const createReport = async (req, res, next) => {
 // ─── PATCH /api/reports/:id/submit ───────────────────────────
 const submitReport = async (req, res, next) => {
     try {
-        const userId = req.user.id; // ← fixed
+        const userId = req.user.id;
 
         const report = await Report.findByPk(req.params.id, {
             include: [{ association: 'schedule' }],
@@ -299,7 +333,7 @@ const submitReport = async (req, res, next) => {
 // ─── PUT /api/reports/:id ─────────────────────────────────────
 const updateReport = async (req, res, next) => {
     try {
-        const userId = req.user.id; // ← fixed
+        const userId = req.user.id;
 
         const report = await Report.findByPk(req.params.id);
 
@@ -336,7 +370,7 @@ const updateReport = async (req, res, next) => {
 // ─── DELETE /api/reports/:id ──────────────────────────────────
 const deleteReport = async (req, res, next) => {
     try {
-        const userId = req.user.id; // ← fixed
+        const userId = req.user.id;
 
         const report = await Report.findByPk(req.params.id);
 
