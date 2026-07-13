@@ -1,6 +1,16 @@
 const { Report, ReportSchedule, User, Department, ReviewLog, Notification } = require('../models');
 const { Op } = require('sequelize');
+const path = require('path');
 const { getCurrentPeriod } = require('../utils/schedulePeriod');
+
+// ─── File URL helper ───────────────────────────────────────────
+// req.file.path from multer is an absolute disk path (e.g. Windows:
+// C:\...\backend\uploads\report-172...pdf). Only the basename is needed,
+// since index.js serves the uploads folder statically at /uploads.
+function buildFileUrl(filePath) {
+    if (!filePath) return null;
+    return `/uploads/${path.basename(filePath)}`;
+}
 
 // ─── Notification helper ──────────────────────────────────────
 async function notify({ user_id, report_id, event_type, message }) {
@@ -88,7 +98,13 @@ const getAllReports = async (req, res, next) => {
             offset,
         });
 
-        res.json({ success: true, count, totalPages: Math.ceil(count / limit), page, reports });
+        // Attach a ready-to-use file_url to each report for the client to download/preview
+        const reportsWithFileUrl = reports.map((r) => {
+            const plain = r.toJSON();
+            return { ...plain, file_url: buildFileUrl(plain.file_path) };
+        });
+
+        res.json({ success: true, count, totalPages: Math.ceil(count / limit), page, reports: reportsWithFileUrl });
     } catch (err) {
         next(err);
     }
@@ -123,7 +139,8 @@ const getReportById = async (req, res, next) => {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 
-        res.json({ success: true, report });
+        const plain = report.toJSON();
+        res.json({ success: true, report: { ...plain, file_url: buildFileUrl(plain.file_path) } });
     } catch (err) {
         next(err);
     }
@@ -245,7 +262,7 @@ const createReport = async (req, res, next) => {
             });
         }
 
-        res.status(201).json({ success: true, report });
+        res.status(201).json({ success: true, report: { ...report.toJSON(), file_url: buildFileUrl(report.file_path) } });
     } catch (err) {
         next(err);
     }
