@@ -9,7 +9,7 @@ const Report = sequelize.define('Report', {
     },
     schedule_id: {
         type: DataTypes.INTEGER,
-        allowNull: false,
+        allowNull: true,
         references: { model: 'report_schedules', key: 'schedule_id' },
         onDelete: 'RESTRICT',
     },
