@@ -21,20 +21,43 @@ const notificationRoutes = require('./routes/notification.routes');
 const app = express();
 
 // ─── Global Middleware ────────────────────────────────────────────────────────
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
+// CLIENT_URL can be a single origin or a comma-separated list, e.g.:
+//   CLIENT_URL=http://localhost:3000,http://reportflow.local
+// This lets the same backend serve both direct Next.js dev access and the
+// nginx-proxied domain without hardcoding one origin.
+const CLIENT_URLS = (process.env.CLIENT_URL || 'http://localhost:3000,http://reportflow.local')
+    .split(',')
+    .map((url) => url.trim())
+    .filter(Boolean);
 
 app.use(
     helmet({
         contentSecurityPolicy: {
             directives: {
                 ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-                "frame-ancestors": ["'self'", CLIENT_URL],
+                "frame-ancestors": ["'self'", ...CLIENT_URLS],
             },
         },
         crossOriginResourcePolicy: false, // allow /uploads to be fetched cross-origin
     })
 );
-app.use(cors({ origin: CLIENT_URL }));
+
+app.use(
+    cors({
+        origin: (origin, callback) => {
+            // Allow requests with no origin (curl, Postman, server-to-server)
+            if (!origin) return callback(null, true);
+
+            if (CLIENT_URLS.includes(origin)) {
+                return callback(null, true);
+            }
+
+            return callback(new Error(`CORS blocked for origin: ${origin}`));
+        },
+        credentials: true,
+    })
+);
+
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -42,7 +65,7 @@ app.use(express.urlencoded({ extended: false }));
 // ─── Static file serving (uploaded reports) ───────────────────────────────────
 app.use('/uploads', (req, res, next) => {
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-    res.setHeader('Content-Security-Policy', `frame-ancestors 'self' ${CLIENT_URL}`);
+    res.setHeader('Content-Security-Policy', `frame-ancestors 'self' ${CLIENT_URLS.join(' ')}`);
     next();
 }, express.static(path.join(__dirname, 'uploads')));
 
@@ -72,6 +95,7 @@ const start = async () => {
     await connectDB();
     app.listen(PORT, () => {
         console.log(`🚀 Server running on port ${PORT}`);
+        console.log(`   Allowed origins: ${CLIENT_URLS.join(', ')}`);
     });
 };
 
